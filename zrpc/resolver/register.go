@@ -9,3 +9,10 @@ import (
 func Register() {
 	internal.RegisterResolver()
 }
+
+type UpdateHandler = internal.UpdateHandler
+
+// RegisterUpdateHandler registers update handler.
+func RegisterUpdateHandler(handler UpdateHandler) {
+	internal.RegisterUpdateHandler(handler)
+}

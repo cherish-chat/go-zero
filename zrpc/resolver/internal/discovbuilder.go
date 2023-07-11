@@ -1,15 +1,24 @@
 package internal
 
 import (
-	"strings"
-
 	"github.com/zeromicro/go-zero/core/discov"
 	"github.com/zeromicro/go-zero/core/logx"
 	"github.com/zeromicro/go-zero/zrpc/resolver/internal/targets"
 	"google.golang.org/grpc/resolver"
+	"strings"
 )
 
 type discovBuilder struct{}
+
+type UpdateHandler interface {
+	OnUpdate(target resolver.Target, addresses []resolver.Address)
+}
+
+var updateHandlers []UpdateHandler
+
+func RegisterUpdateHandler(handler UpdateHandler) {
+	updateHandlers = append(updateHandlers, handler)
+}
 
 func (b *discovBuilder) Build(target resolver.Target, cc resolver.ClientConn, _ resolver.BuildOptions) (
 	resolver.Resolver, error) {
@@ -32,6 +41,10 @@ func (b *discovBuilder) Build(target resolver.Target, cc resolver.ClientConn, _ 
 			Addresses: addrs,
 		}); err != nil {
 			logx.Error(err)
+		} else {
+			for _, handler := range updateHandlers {
+				handler.OnUpdate(target, addrs)
+			}
 		}
 	}
 	sub.AddListener(update)

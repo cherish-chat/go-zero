@@ -1,6 +1,9 @@
 package zrpc
 
 import (
+	"google.golang.org/grpc/resolver"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/zeromicro/go-zero/core/conf"
@@ -8,6 +11,7 @@ import (
 	"github.com/zeromicro/go-zero/zrpc/internal"
 	"github.com/zeromicro/go-zero/zrpc/internal/auth"
 	"github.com/zeromicro/go-zero/zrpc/internal/clientinterceptors"
+	zrpcresolver "github.com/zeromicro/go-zero/zrpc/resolver"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 )
@@ -109,4 +113,78 @@ func DontLogClientContentForMethod(method string) {
 // SetClientSlowThreshold sets the slow threshold on client side.
 func SetClientSlowThreshold(threshold time.Duration) {
 	clientinterceptors.SetSlowThreshold(threshold)
+}
+
+type defaultUpdateHandler struct {
+	targetAddressesMap map[string][]resolver.Address
+	targetClientMap    map[string]map[string]Client
+	lock               sync.RWMutex
+}
+
+var defaultHandler = &defaultUpdateHandler{
+	targetAddressesMap: make(map[string][]resolver.Address),
+	targetClientMap:    make(map[string]map[string]Client),
+}
+
+func (h *defaultUpdateHandler) OnUpdate(target resolver.Target, addresses []resolver.Address) {
+	if target.URL.Scheme == "etcd" {
+		serviceName := strings.TrimPrefix(target.URL.Path, "/")
+		h.lock.Lock()
+		h.targetAddressesMap[serviceName] = addresses
+		clientMap, ok := h.targetClientMap[serviceName]
+		if !ok {
+			clientMap = make(map[string]Client)
+		}
+		for _, address := range addresses {
+			if _, ok := clientMap[address.Addr]; !ok {
+				clientConf := RpcClientConf{
+					Endpoints: []string{address.Addr},
+					NonBlock:  true,
+					Timeout:   60000,
+				}
+				client, err := NewClient(clientConf)
+				if err != nil {
+					logx.Errorf("create client for %s:%s failed: %v", serviceName, address.Addr, err)
+				} else {
+					clientMap[address.Addr] = client
+				}
+			}
+		}
+		h.targetClientMap[serviceName] = clientMap
+		h.lock.Unlock()
+	}
+}
+
+func GetServiceAddresses(serviceName string) ([]resolver.Address, bool) {
+	defaultHandler.lock.RLock()
+	defer defaultHandler.lock.RUnlock()
+	if addresses, ok := defaultHandler.targetAddressesMap[serviceName]; ok {
+		return addresses, true
+	}
+	return nil, false
+}
+
+func GetServiceClientMap(serviceName string) (map[string]Client, bool) {
+	defaultHandler.lock.RLock()
+	defer defaultHandler.lock.RUnlock()
+	if clientMap, ok := defaultHandler.targetClientMap[serviceName]; ok {
+		return clientMap, true
+	}
+	return nil, false
+}
+
+func GetServiceClients(serviceName string) ([]Client, bool) {
+	clientMap, ok := GetServiceClientMap(serviceName)
+	if !ok {
+		return nil, false
+	}
+	var clients []Client
+	for _, client := range clientMap {
+		clients = append(clients, client)
+	}
+	return clients, true
+}
+
+func init() {
+	zrpcresolver.RegisterUpdateHandler(defaultHandler)
 }
